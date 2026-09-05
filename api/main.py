@@ -25,17 +25,9 @@ if PROJECT_ROOT not in sys.path:
 # REVIVEAI IMPORTS
 # --------------------------------------------------
 
-from models.recovery_model import (
-    predict_recovery_probability
-)
-
-from agent.decision_engine import (
-    decide_action
-)
-
-from agent.recovery_agent import (
-    recover_transaction
-)
+from models.recovery_model import predict_recovery_probability
+from agent.decision_engine import decide_action
+from agent.recovery_agent import recover_transaction
 
 
 # --------------------------------------------------
@@ -48,20 +40,31 @@ app = FastAPI(
         "AI-powered revenue recovery system "
         "for failed payments."
     ),
-    version="1.0.0"
+    version="1.0.0",
 )
 
 
 # --------------------------------------------------
 # CORS
 # --------------------------------------------------
+# Local development works by default.
+# For deployment, set:
+# CORS_ORIGINS=https://your-frontend-url.onrender.com
+#
+# Multiple origins can be comma-separated.
+
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -75,13 +78,13 @@ app.add_middleware(
 TRANSACTIONS_PATH = os.path.join(
     PROJECT_ROOT,
     "data",
-    "transactions.csv"
+    "transactions.csv",
 )
 
 RECOVERY_RESULTS_PATH = os.path.join(
     PROJECT_ROOT,
     "data",
-    "recovery_results.csv"
+    "recovery_results.csv",
 )
 
 
@@ -97,22 +100,16 @@ def get_transactions():
             "transactions.csv not found."
         )
 
-    return pd.read_csv(
-        TRANSACTIONS_PATH
-    )
+    return pd.read_csv(TRANSACTIONS_PATH)
 
 
 def get_recovery_results():
     """Load generated recovery/audit results."""
 
-    if not os.path.exists(
-        RECOVERY_RESULTS_PATH
-    ):
+    if not os.path.exists(RECOVERY_RESULTS_PATH):
         return None
 
-    return pd.read_csv(
-        RECOVERY_RESULTS_PATH
-    )
+    return pd.read_csv(RECOVERY_RESULTS_PATH)
 
 
 def prepare_transaction(row):
@@ -120,41 +117,53 @@ def prepare_transaction(row):
     Convert a dataframe row into the transaction
     structure expected by ReviveAI.
 
-    recovery_outcome is retained internally for
-    simulator/provider behavior only. It is never
-    exposed by the public analysis response.
+    recovery_outcome is retained internally for the
+    simulator/provider response only. It is never
+    exposed to the frontend as a model input or public
+    transaction field.
     """
 
+    recovery_outcome = row.get(
+        "recovery_outcome",
+        False,
+    )
+
+    if pd.isna(recovery_outcome):
+        recovery_outcome = False
+
+    if isinstance(recovery_outcome, str):
+        recovery_outcome = (
+            recovery_outcome.strip().lower()
+            in {"true", "1", "yes"}
+        )
+
     return {
-        "transaction_id":
-            row["transaction_id"],
-
-        "amount":
-            float(row["amount"]),
-
-        "payment_method":
-            row["payment_method"],
-
-        "failure_reason":
-            row["failure_reason"],
-
-        "retry_count":
-            int(row["retry_count"]),
-
-        "subscription":
-            bool(row["subscription"]),
-
-        "status":
-            row["status"],
-
-        "recovery_outcome":
-            row["recovery_outcome"],
+        "transaction_id": str(
+            row["transaction_id"]
+        ),
+        "amount": float(row["amount"]),
+        "payment_method": str(
+            row["payment_method"]
+        ),
+        "failure_reason": str(
+            row["failure_reason"]
+        ),
+        "retry_count": int(
+            row["retry_count"]
+        ),
+        "subscription": bool(
+            row["subscription"]
+        ),
+        "status": str(row["status"]),
+        "recovery_outcome": bool(
+            recovery_outcome
+        ),
     }
 
 
 def public_transaction(transaction):
     """
-    Remove internal evaluation/provider data before
+    Remove internal simulator/evaluation data before
     returning a transaction to the frontend.
     """
 
@@ -186,6 +195,28 @@ def serialize_record(record):
     }
 
 
+def find_transaction(transaction_id):
+    """Find a source transaction by transaction ID."""
+
+    transactions = get_transactions()
+
+    matches = transactions[
+        transactions["transaction_id"].astype(str)
+        == str(transaction_id)
+    ]
+
+    if matches.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Transaction {transaction_id} "
+                "not found."
+            ),
+        )
+
+    return matches.iloc[0]
+
+
 # --------------------------------------------------
 # REQUEST MODEL
 # --------------------------------------------------
@@ -200,12 +231,9 @@ class RecoveryRequest(BaseModel):
 
 @app.get("/")
 def root():
-
     return {
         "name": "ReviveAI",
-        "description": (
-            "AI Revenue Recovery Agent"
-        ),
+        "description": "AI Revenue Recovery Agent",
         "status": "online",
         "workflow": [
             "Detect",
@@ -220,7 +248,6 @@ def root():
 
 @app.get("/api/health")
 def health():
-
     return {
         "status": "healthy",
         "service": "reviveai-api",
@@ -234,7 +261,6 @@ def health():
 
 @app.get("/api/dashboard")
 def dashboard():
-
     try:
         results = get_recovery_results()
 
@@ -258,8 +284,7 @@ def dashboard():
         )
 
         recovery_rate = (
-            revenue_recovered /
-            revenue_at_risk
+            revenue_recovered / revenue_at_risk
             if revenue_at_risk > 0
             else 0
         )
@@ -303,46 +328,42 @@ def dashboard():
 
         return {
             "status": "ready",
-
-            "transactions_analyzed":
-                transactions_analyzed,
-
-            "revenue_at_risk":
-                round(revenue_at_risk, 2),
-
-            "revenue_recovered":
-                round(revenue_recovered, 2),
-
-            "recovery_rate":
-                round(recovery_rate, 4),
-
-            "recovery_rate_percent":
-                round(
-                    recovery_rate * 100,
-                    2
-                ),
-
-            "successful_recoveries":
-                successful_recoveries,
-
-            "automated_actions":
-                automated_actions,
-
-            "escalations":
-                escalations,
-
-            "blocked_actions":
-                blocked_actions,
-
-            "approval_required":
-                approval_required,
+            "transactions_analyzed": (
+                transactions_analyzed
+            ),
+            "revenue_at_risk": round(
+                revenue_at_risk,
+                2,
+            ),
+            "revenue_recovered": round(
+                revenue_recovered,
+                2,
+            ),
+            "recovery_rate": round(
+                recovery_rate,
+                4,
+            ),
+            "recovery_rate_percent": round(
+                recovery_rate * 100,
+                2,
+            ),
+            "successful_recoveries": (
+                successful_recoveries
+            ),
+            "automated_actions": (
+                automated_actions
+            ),
+            "escalations": escalations,
+            "blocked_actions": blocked_actions,
+            "approval_required": (
+                approval_required
+            ),
         }
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
         )
 
 
@@ -355,19 +376,20 @@ def transactions(
     limit: int = 100,
     offset: int = 0,
 ):
-
     try:
-
         if limit < 1 or limit > 1000:
             raise HTTPException(
                 status_code=400,
-                detail="limit must be between 1 and 1000."
+                detail=(
+                    "limit must be between "
+                    "1 and 1000."
+                ),
             )
 
         if offset < 0:
             raise HTTPException(
                 status_code=400,
-                detail="offset cannot be negative."
+                detail="offset cannot be negative.",
             )
 
         results = get_recovery_results()
@@ -377,8 +399,9 @@ def transactions(
                 status_code=404,
                 detail=(
                     "Recovery results not found. "
-                    "Run transaction_processor.py first."
-                )
+                    "Run transaction_processor.py "
+                    "first."
+                ),
             )
 
         columns = [
@@ -401,7 +424,7 @@ def transactions(
         data = results[
             available_columns
         ].iloc[
-            offset: offset + limit
+            offset:offset + limit
         ].copy()
 
         data = data.fillna("")
@@ -410,20 +433,18 @@ def transactions(
             "count": len(results),
             "limit": limit,
             "offset": offset,
-            "transactions":
-                data.to_dict(
-                    orient="records"
-                ),
+            "transactions": data.to_dict(
+                orient="records"
+            ),
         }
 
     except HTTPException:
         raise
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
         )
 
 
@@ -435,17 +456,15 @@ def transactions(
     "/api/transactions/{transaction_id}"
 )
 def transaction_detail(
-    transaction_id: str
+    transaction_id: str,
 ):
-
     try:
-
         results = get_recovery_results()
 
         if results is None:
             raise HTTPException(
                 status_code=404,
-                detail="Recovery results not found."
+                detail="Recovery results not found.",
             )
 
         matches = results[
@@ -457,9 +476,9 @@ def transaction_detail(
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    f"Transaction "
-                    f"{transaction_id} not found."
-                )
+                    f"Transaction {transaction_id} "
+                    "not found."
+                ),
             )
 
         return serialize_record(
@@ -470,10 +489,9 @@ def transaction_detail(
         raise
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
         )
 
 
@@ -481,84 +499,80 @@ def transaction_detail(
 # AI ANALYSIS
 # --------------------------------------------------
 
-@app.post(
-    "/api/recovery/analyze"
-)
-def analyze_recovery(
-    request: RecoveryRequest
+def analyze_transaction_by_id(
+    transaction_id: str,
 ):
+    row = find_transaction(transaction_id)
 
+    transaction = prepare_transaction(row)
+
+    probability = predict_recovery_probability(
+        transaction
+    )
+
+    decision = decide_action(
+        transaction,
+        probability,
+    )
+
+    return {
+        "transaction": public_transaction(
+            transaction
+        ),
+        "recovery_probability": round(
+            probability,
+            4,
+        ),
+        "recovery_probability_percent": round(
+            probability * 100,
+            2,
+        ),
+        "action": decision["action"],
+        "policy_status": decision[
+            "policy_status"
+        ],
+        "reason": decision["reason"],
+    }
+
+
+@app.post("/api/recovery/analyze")
+def analyze_recovery(
+    request: RecoveryRequest,
+):
     try:
-
-        transactions = get_transactions()
-
-        matches = transactions[
-            transactions[
-                "transaction_id"
-            ].astype(str)
-            == str(request.transaction_id)
-        ]
-
-        if matches.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Transaction "
-                    f"{request.transaction_id} "
-                    f"not found."
-                )
-            )
-
-        row = matches.iloc[0]
-
-        transaction = prepare_transaction(
-            row
+        return analyze_transaction_by_id(
+            request.transaction_id
         )
-
-        probability = (
-            predict_recovery_probability(
-                transaction
-            )
-        )
-
-        decision = decide_action(
-            transaction,
-            probability
-        )
-
-        return {
-            "transaction":
-                public_transaction(
-                    transaction
-                ),
-
-            "recovery_probability":
-                round(probability, 4),
-
-            "recovery_probability_percent":
-                round(
-                    probability * 100,
-                    2
-                ),
-
-            "action":
-                decision["action"],
-
-            "policy_status":
-                decision["policy_status"],
-
-            "reason":
-                decision["reason"],
-        }
 
     except HTTPException:
         raise
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
+        )
+
+
+# Compatibility endpoint for the frontend API helper.
+@app.get(
+    "/api/transactions/{transaction_id}/analyze"
+)
+def analyze_transaction_endpoint(
+    transaction_id: str,
+):
+    try:
+        return analyze_transaction_by_id(
+            transaction_id
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=str(error),
         )
 
 
@@ -566,39 +580,16 @@ def analyze_recovery(
 # EXECUTE RECOVERY
 # --------------------------------------------------
 
-@app.post(
-    "/api/recovery/execute"
-)
+@app.post("/api/recovery/execute")
 def execute_recovery(
-    request: RecoveryRequest
+    request: RecoveryRequest,
 ):
-
     try:
-
-        transactions = get_transactions()
-
-        matches = transactions[
-            transactions[
-                "transaction_id"
-            ].astype(str)
-            == str(request.transaction_id)
-        ]
-
-        if matches.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Transaction "
-                    f"{request.transaction_id} "
-                    f"not found."
-                )
-            )
-
-        row = matches.iloc[0]
-
-        transaction = prepare_transaction(
-            row
+        row = find_transaction(
+            request.transaction_id
         )
+
+        transaction = prepare_transaction(row)
 
         audit_record = recover_transaction(
             transaction
@@ -606,18 +597,16 @@ def execute_recovery(
 
         return {
             "success": True,
-            "audit_record":
-                audit_record,
+            "audit_record": audit_record,
         }
 
     except HTTPException:
         raise
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
         )
 
 
@@ -625,19 +614,15 @@ def execute_recovery(
 # ACTION ANALYTICS
 # --------------------------------------------------
 
-@app.get(
-    "/api/analytics/actions"
-)
+@app.get("/api/analytics/actions")
 def action_analytics():
-
     try:
-
         results = get_recovery_results()
 
         if results is None:
             raise HTTPException(
                 status_code=404,
-                detail="Recovery results not found."
+                detail="Recovery results not found.",
             )
 
         grouped = (
@@ -646,43 +631,40 @@ def action_analytics():
             .agg(
                 transactions=(
                     "transaction_id",
-                    "count"
+                    "count",
                 ),
                 revenue_at_risk=(
                     "amount",
-                    "sum"
+                    "sum",
                 ),
                 revenue_recovered=(
                     "recovered_amount",
-                    "sum"
-                )
+                    "sum",
+                ),
             )
             .reset_index()
         )
 
         grouped["recovery_rate"] = (
             grouped["revenue_recovered"]
-            /
-            grouped["revenue_at_risk"]
+            / grouped["revenue_at_risk"]
         ).fillna(0)
 
         grouped = grouped.fillna(0)
 
         return {
-            "actions":
-                grouped.to_dict(
-                    orient="records"
-                )
+            "actions": grouped.to_dict(
+                orient="records"
+            )
         }
 
     except HTTPException:
         raise
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
         )
 
 
@@ -694,15 +676,13 @@ def action_analytics():
     "/api/analytics/failure-reasons"
 )
 def failure_reason_analytics():
-
     try:
-
         results = get_recovery_results()
 
         if results is None:
             raise HTTPException(
                 status_code=404,
-                detail="Recovery results not found."
+                detail="Recovery results not found.",
             )
 
         grouped = (
@@ -711,49 +691,48 @@ def failure_reason_analytics():
             .agg(
                 transactions=(
                     "transaction_id",
-                    "count"
+                    "count",
                 ),
                 revenue_at_risk=(
                     "amount",
-                    "sum"
+                    "sum",
                 ),
                 revenue_recovered=(
                     "recovered_amount",
-                    "sum"
+                    "sum",
                 ),
                 successful_recoveries=(
                     "recovered_amount",
                     lambda x: int(
                         (x > 0).sum()
-                    )
-                )
+                    ),
+                ),
             )
             .reset_index()
         )
 
         grouped["recovery_rate"] = (
             grouped["revenue_recovered"]
-            /
-            grouped["revenue_at_risk"]
+            / grouped["revenue_at_risk"]
         ).fillna(0)
 
         grouped = grouped.fillna(0)
 
         return {
-            "failure_reasons":
+            "failure_reasons": (
                 grouped.to_dict(
                     orient="records"
                 )
+            )
         }
 
     except HTTPException:
         raise
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
         )
 
 
@@ -761,19 +740,15 @@ def failure_reason_analytics():
 # POLICY ANALYTICS
 # --------------------------------------------------
 
-@app.get(
-    "/api/analytics/policy"
-)
+@app.get("/api/analytics/policy")
 def policy_analytics():
-
     try:
-
         results = get_recovery_results()
 
         if results is None:
             raise HTTPException(
                 status_code=404,
-                detail="Recovery results not found."
+                detail="Recovery results not found.",
             )
 
         grouped = (
@@ -782,120 +757,120 @@ def policy_analytics():
             .agg(
                 transactions=(
                     "transaction_id",
-                    "count"
+                    "count",
                 ),
                 revenue_at_risk=(
                     "amount",
-                    "sum"
+                    "sum",
                 ),
                 revenue_recovered=(
                     "recovered_amount",
-                    "sum"
-                )
+                    "sum",
+                ),
             )
             .reset_index()
         )
 
         grouped["recovery_rate"] = (
             grouped["revenue_recovered"]
-            /
-            grouped["revenue_at_risk"]
+            / grouped["revenue_at_risk"]
         ).fillna(0)
 
         grouped = grouped.fillna(0)
 
         return {
-            "policy":
-                grouped.to_dict(
-                    orient="records"
-                )
+            "policy": grouped.to_dict(
+                orient="records"
+            )
         }
 
     except HTTPException:
         raise
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
         )
 
 
 # --------------------------------------------------
-# FRAUD ANALYTICS
+# FRAUD / SAFETY ANALYTICS
 # --------------------------------------------------
 
-@app.get(
-    "/api/analytics/fraud"
-)
+@app.get("/api/analytics/fraud")
 def fraud_analytics():
-
     try:
-
         results = get_recovery_results()
 
         if results is None:
             raise HTTPException(
                 status_code=404,
-                detail="Recovery results not found."
+                detail="Recovery results not found.",
             )
 
-        fraud = results[
+        fraud_results = results[
             results["failure_reason"]
             == "FRAUD_SUSPECTED"
         ]
 
-        blocked = fraud[
-            fraud["policy_status"]
-            == "BLOCKED"
-        ]
+        blocked = int(
+            (
+                fraud_results["policy_status"]
+                == "BLOCKED"
+            ).sum()
+        )
+
+        automated_recovery = int(
+            fraud_results["action"].isin(
+                [
+                    "RETRY_PAYMENT",
+                    "CREATE_PAYMENT_LINK",
+                ]
+            ).sum()
+        )
 
         return {
-            "fraud_transactions":
-                int(len(fraud)),
-
-            "fraud_blocked":
-                int(len(blocked)),
-
-            "fraud_recovery_attempts":
-                int(
-                    len(fraud) - len(blocked)
+            "fraud_cases": len(
+                fraud_results
+            ),
+            "blocked_cases": blocked,
+            "automated_recovery_cases": (
+                automated_recovery
+            ),
+            "fraud_recovery_block_rate": round(
+                (
+                    blocked
+                    / len(fraud_results)
+                    if len(fraud_results) > 0
+                    else 0
                 ),
-
-            "fraud_recovered":
-                round(
-                    float(
-                        fraud[
-                            "recovered_amount"
-                        ].sum()
-                    ),
-                    2
-                ),
+                4,
+            ),
         }
 
     except HTTPException:
         raise
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail=str(error),
         )
 
 
 # --------------------------------------------------
-# START DEVELOPMENT SERVER
+# LOCAL DEVELOPMENT ENTRYPOINT
 # --------------------------------------------------
 
 if __name__ == "__main__":
-
     import uvicorn
 
     uvicorn.run(
         "api.main:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=True
+        host="0.0.0.0",
+        port=int(
+            os.getenv("PORT", "8000")
+        ),
+        reload=True,
     )
